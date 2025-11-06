@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Join Dots — Connect Four (Snappy Drop / Fill)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      @keyframes floatSlow { 0%{transform:translate(0,0)} 50%{transform:translate(10px, -20px)} 100%{transform:translate(0,0)} }
+      @keyframes floatSlow2 { 0%{transform:translate(0,0)} 50%{transform:translate(-20px, 10px)} 100%{transform:translate(0,0)} }
+      @keyframes floatSlow3 { 0%{transform:translateX(-50%) translateY(0)} 50%{transform:translateX(-50%) translateY(-16px)} 100%{transform:translateX(-50%) translateY(0)} }
+      .animate-floatSlow { animation: floatSlow 12s ease-in-out infinite; }
+      .animate-floatSlow2 { animation: floatSlow2 14s ease-in-out infinite; }
+      .animate-floatSlow3 { animation: floatSlow3 18s ease-in-out infinite; }
+      @keyframes winPulse { 0%{box-shadow:0 0 0 0 rgba(250,250,210,0.6)} 70%{box-shadow:0 0 0 14px rgba(250,250,210,0)} 100%{box-shadow:0 0 0 0 rgba(250,250,210,0)} }
+      .animate-winPulse { animation: winPulse 1.4s ease-out infinite; }
+      .glass { background: rgba(255,255,255,0.06); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,0.10); }
+      * { -webkit-tap-highlight-color: transparent; }
+    </style>
+  </head>
+  <body class="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100">
+    <div id="root"></div>
+
+    <!-- React UMD + Babel -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+      const { useEffect, useMemo, useRef, useState } = React;
+
+      // --- Constants ---
+      const ROWS = 6;
+      const COLS = 7;
+      const HUMAN = 'R'; // Red / You
+      const BOT = 'Y';   // Yellow / AI (local logic only)
+      const DIFFS = ['Easy', 'Medium', 'Hard'];
+      const ANIMS = ['drop', 'fill'];
+
+      // --- Helpers ---
+      const cloneBoard = (b) => b.map((r) => [...r]);
+      const emptyBoard = () => Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+      const colIsFull = (board, c) => board[0][c] !== null;
+      const legalMoves = (board) => Array.from({ length: COLS }, (_, c) => c).filter((c) => !colIsFull(board, c));
+      const getDropRow = (board, col) => { for (let r = ROWS - 1; r >= 0; r--) if (!board[r][col]) return r; return -1; };
+      const asciiBoard = (board) => board.map((row) => row.map((v) => (v === HUMAN ? 'R' : v === BOT ? 'Y' : '.')).join(' ')).join('\n');
+
+      const checkWin = (board) => {
+        const dirs = [ [0,1], [1,0], [1,1], [1,-1] ];
+        for (let r = 0; r < ROWS; r++) {
+          for (let c = 0; c < COLS; c++) {
+            const p = board[r][c];
+            if (!p) continue;
+            for (const [dr, dc] of dirs) {
+              const line = [{ r, c }];
+              for (let k = 1; k < 4; k++) {
+                const rr = r + dr * k, cc = c + dc * k;
+                if (rr < 0 || rr >= ROWS || cc < 0 || cc >= COLS) break;
+                if (board[rr][cc] !== p) break;
+                line.push({ r: rr, c: cc });
+              }
+              if (line.length === 4) return { winner: p, line };
+            }
+          }
+        }
+        return { winner: null, line: null };
+      };
+      const isDraw = (board) => legalMoves(board).length === 0 && !checkWin(board).winner;
+
+      // --- Local AI Logic ---
+      function pickBotMove(board, difficulty = 'Medium') {
+        const tryMove = (b, col, who) => {
+          const r = getDropRow(b, col); if (r < 0) return null; const b2 = cloneBoard(b); b2[r][col] = who; return { row: r, col, board: b2 };
+        };
+        const moves = legalMoves(board);
+        if (moves.length === 0) return 3;
+        const rand = Math.random();
+        for (const c of moves) { const s = tryMove(board, c, BOT); if (s && checkWin(s.board).winner === BOT) return c; }
+        for (const c of moves) { const s = tryMove(board, c, HUMAN); if (s && checkWin(s.board).winner === HUMAN) { if (difficulty === 'Easy' && rand < 0.5) break; return c; } }
+        if (difficulty === 'Hard') {
+          let best = null, bestScore = -Infinity;
+          for (const c of moves) {
+            const s = tryMove(board, c, BOT); if (!s) continue; let threats = 0;
+            for (const c2 of legalMoves(s.board)) { const s2 = tryMove(s.board, c2, BOT); if (s2 && checkWin(s2.board).winner === BOT) threats++; }
+            const score = threats - Math.abs(c - 3) * 0.1; if (score > bestScore) { bestScore = score; best = c; }
+          }
+          if (best != null) return best;
+        }
+        const centerPref = [3,2,4,1,5,0,6];
+        if (difficulty === 'Easy' && rand < 0.6) return moves[Math.floor(Math.random() * moves.length)];
+        if (difficulty === 'Medium' && rand < 0.25) return moves[Math.floor(Math.random() * moves.length)];
+        for (const c of centerPref) if (!colIsFull(board, c)) return c;
+        return moves[0];
+      }
+
+      const Token = ({ color, className = '' }) => {
+        const isRed = color === HUMAN;
+        const grad = isRed ? 'bg-gradient-to-br from-rose-400 via-pink-500 to-red-500' : 'bg-gradient-to-br from-amber-300 via-yellow-400 to-orange-500';
+        const glow = isRed ? 'shadow-[0_0_30px_6px_rgba(255,50,100,0.35)]' : 'shadow-[0_0_30px_6px_rgba(255,190,0,0.35)]';
+        return <div className={`relative rounded-full ${grad} ${glow} before:absolute before:inset-0 before:rounded-full before:bg-white/20 before:mix-blend-overlay before:opacity-60 ${className}`}/>;
+      };
+
+      function App(){
+        const [board, setBoard] = useState(emptyBoard());
+        const [currentPlayer, setCurrentPlayer] = useState(HUMAN);
+        const [difficulty, setDifficulty] = useState('Medium');
+        const [animStyle, setAnimStyle] = useState('drop'); // 'drop' | 'fill'
+        const [botThinking, setBotThinking] = useState(false);
+        const [botThoughts, setBotThoughts] = useState('');
+        const [botHistory, setBotHistory] = useState([]);
+        const [round, setRound] = useState(0);
+        const [lastMove, setLastMove] = useState(null);
+        const [winInfo, setWinInfo] = useState({ winner: null, line: null });
+        const [isAnimating, setIsAnimating] = useState(false);
+        const [fall, setFall] = useState(null); // { col, row, player, started, mode, duration }
+        const [hoverCol, setHoverCol] = useState(null);
+
+        const boardRef = useRef(null);
+        const [cell, setCell] = useState({ w: 0, h: 0 });
+
+        useEffect(() => {
+          const update = () => {
+            if (!boardRef.current) return;
+            const rect = boardRef.current.getBoundingClientRect();
+            setCell({ w: rect.width / COLS, h: rect.height / ROWS });
+          };
+          update();
+          let ro;
+          try { ro = new ResizeObserver(update); if (boardRef.current) ro.observe(boardRef.current); } catch {}
+          window.addEventListener('resize', update);
+          return () => { try{ ro && ro.disconnect(); }catch{} window.removeEventListener('resize', update); };
+        }, []);
+
+        const gameOver = !!winInfo.winner || isDraw(board);
+
+        const boardStateRef = useRef(board);
+        useEffect(() => { boardStateRef.current = board; }, [board]);
+        const boardRefState = () => boardStateRef.current;
+
+        const handleHumanMove = (col) => {
+          if (botThinking || isAnimating || gameOver || currentPlayer !== HUMAN) return;
+          if (colIsFull(board, col)) return;
+          const row = getDropRow(board, col);
+          const duration = Math.round(160 + 35 * row); // snappy: ~160–335ms
+          setIsAnimating(true);
+          setFall({ col, row, player: HUMAN, started: false, mode: animStyle, duration });
+        };
+
+        // Start CSS transition one frame later so it animates from off-screen
+        useEffect(() => {
+          if (!fall || fall.started || cell.h <= 0) return;
+          const id = requestAnimationFrame(() => setFall(f => f ? { ...f, started: true } : f));
+          return () => cancelAnimationFrame(id);
+        }, [fall, cell.h]);
+
+        // Commit after transition (with a small timer fallback)
+        useEffect(() => {
+          if (!fall) return;
+          let done = false;
+          const finish = () => {
+            if (done) return; done = true;
+            setBoard(prev => { const b = cloneBoard(prev); b[fall.row][fall.col] = fall.player; return b; });
+            setLastMove({ r: fall.row, c: fall.col });
+            setIsAnimating(false); setFall(null);
+            setTimeout(() => {
+              const res = checkWin(boardRefState());
+              if (res.winner) { setWinInfo(res); return; }
+              if (isDraw(boardRefState())) return;
+              setCurrentPlayer(prev => {
+                const next = prev === HUMAN ? BOT : HUMAN;
+                if (next === BOT) triggerBot();
+                return next;
+              });
+            }, 0);
+          };
+          const t = setTimeout(finish, (fall.duration || 250) + 50);
+          return () => clearTimeout(t);
+        }, [fall]);
+
+        async function triggerBot(){
+          if (gameOver) return;
+          setBotThinking(true);
+          const current = boardRefState();
+          const col = pickBotMove(current, difficulty);
+          const thoughts = `Difficulty ${difficulty}. Choosing column ${col}. Priorities: win→block→center→lookahead.`;
+          setBotThoughts(thoughts);
+          const row = getDropRow(current, col);
+          const duration = Math.round(160 + 35 * row);
+          const nextRound = round + 1; setRound(nextRound);
+          setBotHistory(hist => [...hist, { round: nextRound, column: col, thoughts }]);
+          setFall({ col, row, player: BOT, started: false, mode: animStyle, duration });
+          setBotThinking(false);
+        }
+
+        const resetGame = () => {
+          setBoard(emptyBoard()); setCurrentPlayer(HUMAN); setBotThinking(false); setBotThoughts(''); setBotHistory([]); setRound(0); setLastMove(null); setWinInfo({ winner: null, line: null }); setIsAnimating(false); setFall(null); setHoverCol(null);
+        };
+
+        const indicator = useMemo(() => {
+          const color = currentPlayer === HUMAN ? HUMAN : BOT;
+          const text = gameOver ? (winInfo.winner ? (winInfo.winner === HUMAN ? 'You win!' : 'AI wins!') : "It's a draw") : currentPlayer === HUMAN ? 'Your turn' : 'AI is thinking';
+          return { color, text };
+        }, [currentPlayer, gameOver, winInfo]);
+
+        const hoveredDropRow = useMemo(() => hoverCol == null ? null : getDropRow(board, hoverCol), [board, hoverCol]);
+
+        // Render helpers for animation styles
+        const renderFalling = () => {
+          if (!fall || cell.h <= 0) return null;
+          const x = fall.col * cell.w + cell.w / 2;
+          if (fall.mode === 'drop') {
+            const startY = -cell.h; // from above the board
+            const endY = fall.row * cell.h + 6;
+            const style = {
+              left: x + 'px',
+              transform: `translate3d(-50%, ${fall.started ? endY : startY}px, 0)`,
+              transition: fall.started ? `transform ${fall.duration}ms cubic-bezier(0.2,0.7,0.2,1)` : 'none',
+              willChange: 'transform'
+            };
+            return (
+              <div className="pointer-events-none absolute z-30" style={style}>
+                <div style={{ width: (cell.h - 10) + 'px', height: (cell.h - 10) + 'px' }}><Token color={fall.player} className="h-full w-full" /></div>
+              </div>
+            );
+          } else { // 'fill'
+            const centerY = fall.row * cell.h + cell.h / 2 + 6;
+            const style = {
+              left: x + 'px',
+              transform: `translate3d(-50%, ${centerY}px, 0) scale(${fall.started ? 1 : 0})`,
+              transition: fall.started ? `transform ${Math.max(120, fall.duration - 60)}ms cubic-bezier(0.2,0.7,0.2,1)` : 'none',
+              willChange: 'transform'
+            };
+            return (
+              <div className="pointer-events-none absolute z-30" style={style}>
+                <div style={{ width: (cell.h - 10) + 'px', height: (cell.h - 10) + 'px' }}><Token color={fall.player} className="h-full w-full" /></div>
+              </div>
+            );
+          }
+        };
+
+        return (
+          <div className="relative min-h-screen overflow-hidden">
+            {/* Animated orbs */}
+            <div className="pointer-events-none absolute inset-0 overflow-hidden">
+              <div className="absolute -top-24 -left-24 h-72 w-72 rounded-full bg-purple-600/40 blur-3xl animate-floatSlow" />
+              <div className="absolute top-1/3 -right-24 h-80 w-80 rounded-full bg-blue-600/30 blur-3xl animate-floatSlow2" />
+              <div className="absolute bottom-[-4rem] left-1/2 h-96 w-96 -translate-x-1/2 rounded-full bg-pink-600/30 blur-3xl animate-floatSlow3" />
+            </div>
+
+            <div className="relative mx-auto flex max-w-7xl flex-col gap-6 px-4 py-8 md:flex-row md:gap-8 md:px-8">
+              {/* Game board */}
+              <div className="relative flex-1">
+                <div className="mb-4 flex items-center gap-3">
+                  <div className="glass inline-flex items-center gap-3 rounded-2xl px-4 py-2 shadow-2xl">
+                    <div className="h-3 w-3 rounded-full bg-gradient-to-br from-rose-400 to-red-500 shadow-[0_0_18px_6px_rgba(255,80,120,0.35)]" />
+                    <span className="text-sm text-slate-200">You</span>
+                    <div className="ml-3 h-3 w-3 rounded-full bg-gradient-to-br from-amber-300 to-orange-500 shadow-[0_0_18px_6px_rgba(255,190,0,0.35)]" />
+                    <span className="text-sm text-slate-200">AI</span>
+                  </div>
+                  <div className="glass ml-auto flex items-center gap-2 rounded-2xl px-4 py-2 text-sm shadow-2xl">
+                    <span className="opacity-70">Turn:</span>
+                    <div className="relative h-5 w-5"><Token color={indicator.color} className="h-5 w-5" /><div className="absolute inset-0 rounded-full ring-2 ring-white/70" /></div>
+                    <span className="font-medium">{indicator.text}</span>
+                  </div>
+                </div>
+
+                <div ref={boardRef} className="relative glass mx-auto aspect-[7/6] w-full max-w-[720px] overflow-hidden rounded-3xl p-2 shadow-[0_10px_60px_rgba(0,0,0,0.5)]">
+                  <div className="absolute inset-0 -z-10 rounded-3xl bg-gradient-to-br from-slate-800 to-slate-900" />
+
+                  {/* CLICKABLE COLUMNS (on top) */}
+                  <div className="absolute inset-0 z-20 grid grid-cols-7">
+                    {Array.from({ length: COLS }, (_, c) => (
+                      <div key={c} className="group relative" onMouseEnter={() => setHoverCol(c)} onMouseLeave={() => setHoverCol(null)} onClick={() => handleHumanMove(c)}>
+                        {hoverCol === c && !gameOver && !botThinking && !isAnimating && (
+                          <div className="pointer-events-none absolute left-1/2 top-1 -translate-x-1/2 transition-transform duration-150 ease-out group-hover:-translate-y-1/2"><div className="h-8 w-8 opacity-80"><Token color={HUMAN} className="h-8 w-8" /></div></div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* GRID HOLES & TOKENS (non-interactive layer) */}
+                  <div className="relative z-10 grid h-full w-full grid-cols-7 grid-rows-6 gap-2 pointer-events-none">
+                    {board.map((row, r) => row.map((cellVal, c) => {
+                      const isLast = lastMove && lastMove.r === r && lastMove.c === c;
+                      const isWin = winInfo.line && winInfo.line.some((p) => p.r === r && p.c === c);
+                      return (
+                        <div key={`${r}-${c}`} className="relative">
+                          <div className="relative z-0 h-full w-full rounded-full bg-slate-950/80 ring-1 ring-white/10">
+                            {hoverCol === c && hoveredDropRow === r && !gameOver && (
+                              <div className="absolute inset-0 rounded-full ring-2 ring-sky-300/70" />
+                            )}
+                          </div>
+                          {cellVal && (
+                            <div className={`absolute inset-1 z-10 ${isWin ? 'animate-winPulse' : ''}`}>
+                              <Token color={cellVal} className="h-full w-full" />
+                              {isLast && <div className="pointer-events-none absolute inset-0 rounded-full ring-4 ring-white/80" />}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }))}
+                  </div>
+
+                  {/* FALLING OVERLAY (snappy CSS drop or fill) */}
+                  {renderFalling()}
+
+                  {/* BOT thinking overlay */}
+                  {botThinking && (
+                    <div className="absolute inset-0 z-40 grid place-items-center bg-slate-900/40 backdrop-blur-sm"><div className="glass flex items-center gap-3 rounded-2xl px-4 py-2 text-slate-200"><div className="h-2 w-2 animate-ping rounded-full bg-yellow-300" /><span>AI is thinking…</span></div></div>
+                  )}
+
+                  {/* Winner / Draw overlay */}
+                  {(!!winInfo.winner || isDraw(board)) && (
+                    <div className="absolute inset-0 z-40 grid place-items-center bg-slate-950/60 backdrop-blur-sm">
+                      <div className="glass w-full max-w-md rounded-3xl p-6 text-center shadow-2xl">
+                        <h3 className="mb-2 bg-gradient-to-r from-sky-300 via-fuchsia-300 to-amber-200 bg-clip-text text-2xl font-bold text-transparent">{winInfo.winner ? (winInfo.winner === HUMAN ? 'You won!' : 'AI wins!') : 'It’s a draw!'}</h3>
+                        <p className="mb-4 text-slate-300">{winInfo.winner ? (winInfo.winner === HUMAN ? 'Beautiful connect-four!' : 'AI found a winning line.') : 'No more legal moves available.'}</p>
+                        <button onClick={resetGame} className="mx-auto inline-flex items-center justify-center rounded-2xl bg-white/10 px-4 py-2 text-sm font-semibold text-white shadow-xl ring-1 ring-white/20 transition hover:bg-white/20">Play again</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right panel */}
+              <aside className="md:w-[420px]">
+                <div className="glass sticky top-8 rounded-3xl p-5 shadow-2xl">
+                  <div className="mb-4 flex items-center justify-between">
+                    <h2 className="text-lg font-semibold text-slate-100">AI’s thinking</h2>
+                    <div className="flex items-center gap-3 text-xs text-slate-300">
+                      <label className="flex items-center gap-1">Difficulty:
+                        <select value={difficulty} onChange={(e)=>setDifficulty(e.target.value)} className="bg-white/10 rounded-lg px-2 py-1 text-slate-100 ring-1 ring-white/20">
+                          {DIFFS.map(d => <option key={d} value={d}>{d}</option>)}
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-1">Animation:
+                        <select value={animStyle} onChange={(e)=>setAnimStyle(e.target.value)} className="bg-white/10 rounded-lg px-2 py-1 text-slate-100 ring-1 ring-white/20">
+                          {ANIMS.map(a => <option key={a} value={a}>{a}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="mb-4 rounded-2xl bg-black/30 p-3 ring-1 ring-white/10">
+                    <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">Board (ASCII)</div>
+                    <pre className="overflow-x-auto rounded-lg bg-black/30 p-3 text-[11px] leading-4 text-slate-200">{asciiBoard(board)}</pre>
+                  </div>
+
+                  <div className="mb-4 rounded-2xl bg-black/30 p-3 ring-1 ring-white/10">
+                    <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">Current analysis</div>
+                    <div className="min-h-[48px] whitespace-pre-wrap text-sm text-slate-200">{botThinking ? 'Evaluating immediate wins, blocks, and center preference…' : (botThoughts || '—')}</div>
+                  </div>
+
+                  <div className="rounded-2xl bg-black/30 p-3 ring-1 ring-white/10">
+                    <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">AI move history</div>
+                    <ul className="space-y-2 text-sm">
+                      {botHistory.length === 0 && <li className="text-slate-400">No moves yet.</li>}
+                      {botHistory.map((m) => (
+                        <li key={m.round} className="rounded-xl bg-white/5 p-2">
+                          <div className="mb-1 flex items-center justify-between text-xs text-slate-400"><span>Round {m.round}</span><span>Column: <span className="font-semibold text-slate-200">{m.column}</span></span></div>
+                          <div className="text-slate-200">{m.thoughts || '(no rationale)'}</div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="mt-4 flex items-center justify-between">
+                    <button onClick={resetGame} className="rounded-2xl bg-white/10 px-3 py-2 text-sm font-semibold ring-1 ring-white/20 transition hover:bg-white/20">Restart</button>
+                  </div>
+
+                </div>
+              </aside>
+            </div>
+          </div>
+        );
+      }
+
+      // ---------- Self‑Tests ----------
+      (function runSelfTests(){
+        const ok = [], fail = [];
+        const B = emptyBoard();
+        if (!checkWin(B).winner) ok.push('T1 no winner on empty'); else fail.push('T1 failed');
+        const B2 = emptyBoard(); B2[5][0]='R'; B2[5][1]='R'; B2[5][2]='R'; B2[5][3]='R';
+        if (checkWin(B2).winner==='R') ok.push('T2 horizontal R'); else fail.push('T2 failed');
+        const B3 = emptyBoard(); B3[5][0]='Y'; B3[4][0]='Y'; B3[3][0]='Y'; B3[2][0]='Y';
+        if (checkWin(B3).winner==='Y') ok.push('T3 vertical Y'); else fail.push('T3 failed');
+        const B4 = emptyBoard(); B4[2][0]='R'; B4[3][1]='R'; B4[4][2]='R'; B4[5][3]='R';
+        if (checkWin(B4).winner==='R') ok.push('T4 diag ↘ R'); else fail.push('T4 failed');
+        const B5 = emptyBoard(); B5[2][6]='Y'; B5[3][5]='Y'; B5[4][4]='Y'; B5[5][3]='Y';
+        if (checkWin(B5).winner==='Y') ok.push('T5 diag ↙ Y'); else fail.push('T5 failed');
+        const B6 = emptyBoard(); if (getDropRow(B6,0)===5) ok.push('T6 drop empty col'); else fail.push('T6a failed');
+        B6[5][0]='R'; if (getDropRow(B6,0)===4) ok.push('T6 next drop'); else fail.push('T6b failed');
+        if (isDraw(emptyBoard())===false) ok.push('T7 draw false on empty'); else fail.push('T7 failed');
+        console.groupCollapsed('%cJoin Dots self‑tests','color:#67e8f9');
+        console.log('OK:', ok); console.log('FAIL:', fail); console.groupEnd();
+      })();
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      try { root.render(<App/>); } catch (e) { console.error('Render error', e); }
+    </script>
+  </body>
+</html>
