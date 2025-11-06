@@ -75,8 +75,11 @@
         const moves = legalMoves(board);
         if (moves.length === 0) return 3;
         const rand = Math.random();
+        // 1) Win now
         for (const c of moves) { const s = tryMove(board, c, BOT); if (s && checkWin(s.board).winner === BOT) return c; }
+        // 2) Block
         for (const c of moves) { const s = tryMove(board, c, HUMAN); if (s && checkWin(s.board).winner === HUMAN) { if (difficulty === 'Easy' && rand < 0.5) break; return c; } }
+        // 3) Hard lookahead/center bias
         if (difficulty === 'Hard') {
           let best = null, bestScore = -Infinity;
           for (const c of moves) {
@@ -86,6 +89,7 @@
           }
           if (best != null) return best;
         }
+        // 4) Center preference with some randomness
         const centerPref = [3,2,4,1,5,0,6];
         if (difficulty === 'Easy' && rand < 0.6) return moves[Math.floor(Math.random() * moves.length)];
         if (difficulty === 'Medium' && rand < 0.25) return moves[Math.floor(Math.random() * moves.length)];
@@ -133,6 +137,7 @@
 
         const gameOver = !!winInfo.winner || isDraw(board);
 
+        // Keep fresh board for async checks
         const boardStateRef = useRef(board);
         useEffect(() => { boardStateRef.current = board; }, [board]);
         const boardRefState = () => boardStateRef.current;
@@ -162,23 +167,27 @@
             setBoard(prev => { const b = cloneBoard(prev); b[fall.row][fall.col] = fall.player; return b; });
             setLastMove({ r: fall.row, c: fall.col });
             setIsAnimating(false); setFall(null);
+            // After placement, evaluate and flip turn only.
             setTimeout(() => {
               const res = checkWin(boardRefState());
               if (res.winner) { setWinInfo(res); return; }
               if (isDraw(boardRefState())) return;
-              setCurrentPlayer(prev => {
-                const next = prev === HUMAN ? BOT : HUMAN;
-                if (next === BOT) triggerBot();
-                return next;
-              });
+              setCurrentPlayer(prev => (prev === HUMAN ? BOT : HUMAN));
             }, 0);
           };
           const t = setTimeout(finish, (fall.duration || 250) + 50);
           return () => clearTimeout(t);
         }, [fall]);
 
+        // NEW: Deterministic AI trigger — only when it's AI's turn and no animations
+        useEffect(() => {
+          if (currentPlayer !== BOT) return;
+          if (botThinking || isAnimating || fall || gameOver) return;
+          triggerBot();
+        }, [currentPlayer, botThinking, isAnimating, fall, gameOver]);
+
         async function triggerBot(){
-          if (gameOver) return;
+          if (botThinking || isAnimating || fall || gameOver) return;
           setBotThinking(true);
           const current = boardRefState();
           const col = pickBotMove(current, difficulty);
@@ -391,6 +400,13 @@
         const B6 = emptyBoard(); if (getDropRow(B6,0)===5) ok.push('T6 drop empty col'); else fail.push('T6a failed');
         B6[5][0]='R'; if (getDropRow(B6,0)===4) ok.push('T6 next drop'); else fail.push('T6b failed');
         if (isDraw(emptyBoard())===false) ok.push('T7 draw false on empty'); else fail.push('T7 failed');
+        // T8: Human should start turn
+        if (HUMAN === 'R') ok.push('T8 human defined');
+        // Added tests
+        const B7 = emptyBoard(); for (let r=0;r<ROWS;r++) B7[r][0] = 'R'; if (getDropRow(B7,0)===-1) ok.push('T9 full column returns -1'); else fail.push('T9 failed');
+        const B8 = emptyBoard(); if (legalMoves(B8).length===7) ok.push('T10 legal moves on empty = 7'); else fail.push('T10 failed');
+        const lines = asciiBoard(emptyBoard()).split('\n').length; if (lines===ROWS) ok.push('T11 ascii lines match rows'); else fail.push('T11 failed');
+        const hardCol = pickBotMove(emptyBoard(), 'Hard'); if (hardCol===3) ok.push('T12 hard picks center on empty'); else fail.push('T12 failed');
         console.groupCollapsed('%cJoin Dots self‑tests','color:#67e8f9');
         console.log('OK:', ok); console.log('FAIL:', fail); console.groupEnd();
       })();
