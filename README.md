@@ -1,0 +1,2 @@
+# joindots
+A simple connect 4 game
